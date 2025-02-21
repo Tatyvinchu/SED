@@ -1,0 +1,129 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WebServer.h>
+
+// Network credentials
+const char* ssid = "Abhi";
+const char* password = "12345678";
+
+// Server details
+const char* serverIP = "192.168.116.75";
+const int serverPort = 80;
+const String clientID = "Floor_2_Client";
+
+// Pins
+#define BUTTON_PIN 2
+#define LED_PIN 4
+
+// Variables
+bool emergencyActive = false;
+unsigned long lastHeartbeatTime = 0;
+const unsigned long heartbeatInterval = 60000; // 1 minute
+
+// Client web server for listening to alerts
+WebServer clientServer(80);
+
+void setup() {
+    Serial.begin(115200);
+
+    // Initialize button and LED pins
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+
+    // Connect to Wi-Fi
+    connectToWiFi();
+
+    // Define route for receiving alerts
+    clientServer.on("/alert", handleAlert);
+
+    // Start the client web server
+    clientServer.begin();
+    Serial.println("Client alert listener started");
+}
+
+void loop() {
+    // Check if button is pressed
+    if (digitalRead(BUTTON_PIN) == LOW && !emergencyActive) {
+        emergencyActive = true;
+        sendEmergencyAlert("Fire");
+    }
+
+    // Send periodic heartbeat
+    if (millis() - lastHeartbeatTime > heartbeatInterval) {
+        sendHeartbeat();
+        lastHeartbeatTime = millis();
+    }
+
+    // Reset emergency state if button is released
+    if (digitalRead(BUTTON_PIN) == HIGH) {
+        emergencyActive = false;
+    }
+
+    // Handle incoming alerts
+    clientServer.handleClient();
+}
+
+// Connect to Wi-Fi
+void connectToWiFi() {
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.println("Connecting to WiFi...");
+    }
+    Serial.println("Connected to WiFi!");
+}
+
+// Send emergency alert to server
+void sendEmergencyAlert(const String& emergencyType) {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        String url = "http://" + String(serverIP) + ":" + String(serverPort) + "/emergency";
+        url += "?client=" + clientID + "&type=" + emergencyType;
+
+        http.begin(url);
+        int httpResponseCode = http.GET();
+
+        if (httpResponseCode > 0) {
+            Serial.println("Emergency alert sent successfully!");
+        } else {
+            Serial.println("Failed to send emergency alert.");
+        }
+        http.end();
+    } else {
+        Serial.println("WiFi not connected.");
+    }
+}
+
+// Send periodic heartbeat to server
+void sendHeartbeat() {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        String url = "http://" + String(serverIP) + ":" + String(serverPort) + "/heartbeat";
+        url += "?client=" + clientID;
+
+        http.begin(url);
+        int httpResponseCode = http.GET();
+
+        if (httpResponseCode > 0) {
+            Serial.println("Heartbeat sent successfully!");
+        } else {
+            Serial.println("Failed to send heartbeat.");
+        }
+        http.end();
+    } else {
+        Serial.println("WiFi not connected.");
+    }
+}
+
+// Handle incoming alert
+void handleAlert() {
+    Serial.println("Emergency alert received! Blinking LED...");
+    for (int i = 0; i < 10; i++) {
+        digitalWrite(LED_PIN, HIGH);
+        delay(500);
+        digitalWrite(LED_PIN, LOW);
+        delay(500);
+    }
+    clientServer.send(200, "text/plain", "Alert acknowledged");
+}
