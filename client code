@@ -1,72 +1,111 @@
 #include <WiFi.h>
-#include <HTTPClient.h>
-#include <WebServer.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+#include "AdafruitIO_WiFi.h"
 
-// Network credentials
-const char* ssid = "Abhi";
-const char* password = "12345678";
+// WiFi & Adafruit IO Configuration
+#define WIFI_SSID "Hemang-5G"
+#define WIFI_PASS "kaustubh1308"
+#define AIO_USERNAME "SED_Project"
+#define AIO_KEY "aio_uWHU48kiRhuU2z2sZtZ6osIr9NeW"
 
-// Server details
-const char* serverIP = "192.168.116.75";
-const int serverPort = 80;
-const String clientID = "Floor_2_Client";
+// Define ESP32 ID
+#define CLIENT_ID "Floor_1_esp"
 
-// Pins
-#define BUTTON_PIN 2
-#define LED_PIN 4
+// Define Button Pins
+#define FIRE_BUTTON 2
+#define MEDICAL_BUTTON 4
+#define SECURITY_BUTTON 5
+#define OTHER_BUTTON 18
 
-// Variables
-bool emergencyActive = false;
-unsigned long lastHeartbeatTime = 0;
-const unsigned long heartbeatInterval = 60000; // 1 minute
+// Define Output Pins
+#define LED_PIN 19
+#define BUZZER_PIN 21
 
-// Client web server for listening to alerts
-WebServer clientServer(80);
+// WiFi Client & MQTT Setup
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, "io.adafruit.com", 1883, AIO_USERNAME, AIO_KEY);
+
+// Adafruit IO Feeds for Sending Alerts
+Adafruit_MQTT_Publish fireAlert = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/fire_alert");
+Adafruit_MQTT_Publish medicalAlert = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/medical_alert");
+Adafruit_MQTT_Publish securityAlert = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/security_alert");
+Adafruit_MQTT_Publish otherAlert = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/other_alert");
+
+// Adafruit IO Feeds for Receiving Alerts
+Adafruit_MQTT_Subscribe fireAlertSub = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/fire_alert");
+Adafruit_MQTT_Subscribe medicalAlertSub = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/medical_alert");
+Adafruit_MQTT_Subscribe securityAlertSub = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/security_alert");
+Adafruit_MQTT_Subscribe otherAlertSub = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/other_alert");
 
 void setup() {
     Serial.begin(115200);
-
-    // Initialize button and LED pins
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    
+    pinMode(FIRE_BUTTON, INPUT_PULLUP);
+    pinMode(MEDICAL_BUTTON, INPUT_PULLUP);
+    pinMode(SECURITY_BUTTON, INPUT_PULLUP);
+    pinMode(OTHER_BUTTON, INPUT_PULLUP);
+    
     pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
-
-    // Connect to Wi-Fi
+    pinMode(BUZZER_PIN, OUTPUT);
+    
     connectToWiFi();
+    connectToMQTT();
 
-    // Define route for receiving alerts
-    clientServer.on("/alert", handleAlert);
-
-    // Start the client web server
-    clientServer.begin();
-    Serial.println("Client alert listener started");
+    // Subscribe to alert feeds
+    mqtt.subscribe(&fireAlertSub);
+    mqtt.subscribe(&medicalAlertSub);
+    mqtt.subscribe(&securityAlertSub);
+    mqtt.subscribe(&otherAlertSub);
 }
 
 void loop() {
-    // Check if button is pressed
-    if (digitalRead(BUTTON_PIN) == LOW && !emergencyActive) {
-        emergencyActive = true;
-        sendEmergencyAlert("Fire");
+    mqtt.processPackets(10000);
+    
+    // Check button presses and send alerts
+    if (digitalRead(FIRE_BUTTON) == LOW) {
+        sendEmergencyAlert("Fire", &fireAlert);
+    } else if (digitalRead(MEDICAL_BUTTON) == LOW) {
+        sendEmergencyAlert("Medical", &medicalAlert);
+    } else if (digitalRead(SECURITY_BUTTON) == LOW) {
+        sendEmergencyAlert("Security", &securityAlert);
+    } else if (digitalRead(OTHER_BUTTON) == LOW) {
+        sendEmergencyAlert("Other", &otherAlert);
     }
 
-    // Send periodic heartbeat
-    if (millis() - lastHeartbeatTime > heartbeatInterval) {
-        sendHeartbeat();
-        lastHeartbeatTime = millis();
+    // Check for received messages
+    while (Adafruit_MQTT_Subscribe *subscription = mqtt.readSubscription(1000)) {
+        if (subscription == &fireAlertSub || subscription == &medicalAlertSub || 
+            subscription == &securityAlertSub || subscription == &otherAlertSub) {
+            triggerEmergencyResponse();
+        }
     }
-
-    // Reset emergency state if button is released
-    if (digitalRead(BUTTON_PIN) == HIGH) {
-        emergencyActive = false;
-    }
-
-    // Handle incoming alerts
-    clientServer.handleClient();
 }
 
-// Connect to Wi-Fi
+// Function to send alerts
+void sendEmergencyAlert(String alertType, Adafruit_MQTT_Publish *alertFeed) {
+    Serial.println(alertType + " Alert Sent!");
+    alertFeed->publish(1);
+    delay(10000); // Keep alert active for 10 seconds
+    alertFeed->publish(0);
+}
+
+// Function to handle received alerts
+void triggerEmergencyResponse() {
+    Serial.println("Emergency Alert Received! Activating buzzer and LED.");
+    for (int i = 0; i < 5; i++) {
+        digitalWrite(LED_PIN, HIGH);
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(500);
+        digitalWrite(LED_PIN, LOW);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(500);
+    }
+}
+
+// Function to connect to WiFi
 void connectToWiFi() {
-    WiFi.begin(ssid, password);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
     while (WiFi.status() != WL_CONNECTED) {
         delay(1000);
         Serial.println("Connecting to WiFi...");
@@ -74,56 +113,11 @@ void connectToWiFi() {
     Serial.println("Connected to WiFi!");
 }
 
-// Send emergency alert to server
-void sendEmergencyAlert(const String& emergencyType) {
-    if (WiFi.status() == WL_CONNECTED) {
-        HTTPClient http;
-        String url = "http://" + String(serverIP) + ":" + String(serverPort) + "/emergency";
-        url += "?client=" + clientID + "&type=" + emergencyType;
-
-        http.begin(url);
-        int httpResponseCode = http.GET();
-
-        if (httpResponseCode > 0) {
-            Serial.println("Emergency alert sent successfully!");
-        } else {
-            Serial.println("Failed to send emergency alert.");
-        }
-        http.end();
-    } else {
-        Serial.println("WiFi not connected.");
+// Function to connect to Adafruit MQTT
+void connectToMQTT() {
+    while (mqtt.connect() != 0) {
+        Serial.println("Connecting to MQTT...");
+        delay(5000);
     }
-}
-
-// Send periodic heartbeat to server
-void sendHeartbeat() {
-    if (WiFi.status() == WL_CONNECTED) {
-        HTTPClient http;
-        String url = "http://" + String(serverIP) + ":" + String(serverPort) + "/heartbeat";
-        url += "?client=" + clientID;
-
-        http.begin(url);
-        int httpResponseCode = http.GET();
-
-        if (httpResponseCode > 0) {
-            Serial.println("Heartbeat sent successfully!");
-        } else {
-            Serial.println("Failed to send heartbeat.");
-        }
-        http.end();
-    } else {
-        Serial.println("WiFi not connected.");
-    }
-}
-
-// Handle incoming alert
-void handleAlert() {
-    Serial.println("Emergency alert received! Blinking LED...");
-    for (int i = 0; i < 10; i++) {
-        digitalWrite(LED_PIN, HIGH);
-        delay(500);
-        digitalWrite(LED_PIN, LOW);
-        delay(500);
-    }
-    clientServer.send(200, "text/plain", "Alert acknowledged");
+    Serial.println("Connected to MQTT!");
 }
